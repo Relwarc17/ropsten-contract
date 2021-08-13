@@ -396,11 +396,12 @@ contract DHNETWORKTESTS is ERC20, Ownable {
             && !automatedMarketMakerPairs[from] && to != owner() && from != owner()
             && from != address(dividendTracker) && to != address(dividendTracker);
             
-        if(!isTransferBetweenWallets && !_isExcludedFromFees[to] && !_isExcludedFromFees[from] || () ) {
+        if(!isTransferBetweenWallets && !_isExcludedFromFees[to] && !_isExcludedFromFees[from] 
+            || (automatedMarketMakerPairs[to] && from != address(uniswapV2Router)) ) {
             require(amount <= _maxTxAmount, "Transfer amount exceeds the maxTxAmount.");
         }
         
-        if (from == uniswapV2Pair){
+        if (automatedMarketMakerPairs[from]){
             require(!maxWalletReached(to, amount), "Wallets can not hold more than 15000 tokens");
         }
 
