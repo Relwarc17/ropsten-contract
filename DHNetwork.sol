@@ -185,7 +185,7 @@ contract DHNETWORKTESTS is ERC20, Ownable {
         excludeFromFees(_treasuryWalletAddress, true);
         excludeFromFees(address(this), true);
         excludeFromFees(address(0), true);
-        excludeFromFees(address(_uniswapV2Router), true);
+        //excludeFromFees(address(_uniswapV2Router), true);
 
         excludeFromTransferLimits(address(dividendTracker), true);
         excludeFromTransferLimits(address(this), true);
@@ -277,13 +277,13 @@ contract DHNETWORKTESTS is ERC20, Ownable {
     	return dividendTracker.getAccountAtIndex(index);
     }
 
-	function processDividendTracker(uint256 gas) external {
-		(uint256 iterations, uint256 claims, uint256 lastProcessedIndex) = dividendTracker.process(gas);
-		emit ProcessedDividendTracker(iterations, claims, lastProcessedIndex, false, gas, tx.origin);
+    function processDividendTracker(uint256 gas) external {
+	(uint256 iterations, uint256 claims, uint256 lastProcessedIndex) = dividendTracker.process(gas);
+	emit ProcessedDividendTracker(iterations, claims, lastProcessedIndex, false, gas, tx.origin);
     }
 
     function claim() external {
-		dividendTracker.processAccount(payable(msg.sender), false);
+	dividendTracker.processAccount(payable(msg.sender), false);
     }
 
     function getLastProcessedIndex() external view returns(uint256) {
@@ -396,7 +396,7 @@ contract DHNETWORKTESTS is ERC20, Ownable {
             && !automatedMarketMakerPairs[from] && to != owner() && from != owner()
             && from != address(dividendTracker) && to != address(dividendTracker);
             
-        if(!isTransferBetweenWallets && !_isExcludedFromFees[to] && !_isExcludedFromFees[from]) {
+        if(!isTransferBetweenWallets && !_isExcludedFromFees[to] && !_isExcludedFromFees[from] || () ) {
             require(amount <= _maxTxAmount, "Transfer amount exceeds the maxTxAmount.");
         }
         
@@ -413,7 +413,7 @@ contract DHNETWORKTESTS is ERC20, Ownable {
             _firstTransferTime = block.timestamp;
         }
 
-        if(to == address(uniswapV2Pair) && !_isExcludedFromTransferLimits[from]){
+        if(automatedMarketMakerPairs[to] && !_isExcludedFromTransferLimits[from]){
             if(!canSell(from, amount)){
                 revert("You can only sell 10% of your total tokens per day.");
             }
@@ -424,7 +424,7 @@ contract DHNETWORKTESTS is ERC20, Ownable {
             cloneSellDataToTransferWallet(to, from);
         }
 
-		uint256 contractTokenBalance = balanceOf(address(this));
+	uint256 contractTokenBalance = balanceOf(address(this));
 
         bool canSwap = contractTokenBalance >= _swapTokensAtAmount;
 
@@ -569,7 +569,8 @@ contract DHNETWORKTESTS is ERC20, Ownable {
             tokenAmount,
             0, // slippage is unavoidable
             0, // slippage is unavoidable
-            address(0),
+            //address(0),
+	    owner(),
             block.timestamp
         );
 
