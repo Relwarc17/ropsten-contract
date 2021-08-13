@@ -35,13 +35,15 @@ contract DHNETWORKTESTS is ERC20, Ownable {
 
     DHNETWORKTESTSDividendTracker public dividendTracker;
 
-    address public deadWallet = 0x000000000000000000000000000000000000dEaD;
+    address public constant DEAD_WALLET = 0x000000000000000000000000000000000000dEaD;
+
+    uint256 private constant START_TIMEOUT = 300;
 
     //address public _rewardsTokenAddress = address(0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82); // Rewards token
 
     address public _rewardsTokenAddress = address(0xaD6D458402F60fD3Bd25163575031ACDce07538D); // Rewards token TESTNET
 
-    uint256 public swapTokensAtAmount = 200 * (10**18);
+    uint256 public _swapTokensAtAmount = 7500 * (10**18);
 
     mapping(address => bool) public _isBlacklisted;
 
@@ -55,7 +57,10 @@ contract DHNETWORKTESTS is ERC20, Ownable {
     uint256 public _firstTransferTime = 0;
 
     //change to marketing wallet with multisig
-    address public _marketingWalletAddress = 0x5B1708D5d9cF14924a2f12be7f42176c5f548cAa;
+    address payable public _marketingWalletAddress = payable(0x5B1708D5d9cF14924a2f12be7f42176c5f548cAa);
+    
+    //change to treasury wallet with multisig
+    address payable public _treasuryWalletAddress = payable(0x67dDBBC5bC766e88F491D12f4372C72bB8ABedF3);
 
     address[] public _teamWallets =  [0xE249c6f118750B3c2cBE00FE2A9A09f791864E57, //
         0x67e0Fd55D625f920004649020eb04B2992bf099f, //
@@ -86,11 +91,10 @@ contract DHNETWORKTESTS is ERC20, Ownable {
     // store last transaction times of wallets.
     //mapping (address => uint256) public _transferWait;
 
-    uint256 public sellWait;
+    uint256 public _sellWait = 86400;
 
-    uint256 public startingTimeout;
-
-    uint256 public maxWalletSize = 15000 * (10**18);
+    uint256 public _maxWalletSize = 15000 * (10**18);
+    uint256 public _maxTxAmount = 1000 * (10**18);
 
     uint256 public lockPeriod = 7889238;
 
@@ -107,8 +111,9 @@ contract DHNETWORKTESTS is ERC20, Ownable {
     event UpdateDividendTracker(address indexed newAddress, address indexed oldAddress);
 
     event UpdateUniswapV2Router(address indexed newAddress, address indexed oldAddress);
-
+    
     event ExcludeFromFees(address indexed account, bool isExcluded);
+    
     event ExcludeFromTransferLimits(address indexed account, bool isExcluded);
     event ExcludeMultipleAccountsFromFees(address[] accounts, bool isExcluded);
 
@@ -139,6 +144,11 @@ contract DHNETWORKTESTS is ERC20, Ownable {
     	uint256 gas,
     	address indexed processor
     );
+    
+    event SwapTokensForETH(
+        uint256 amountIn,
+        address[] path
+    );
 
     //constructor() ERC20("Diamond Hands Network", "DHNETWORK") {
     constructor() ERC20("DHNTests-2", "DHNT2") {
@@ -152,7 +162,7 @@ contract DHNETWORKTESTS is ERC20, Ownable {
         IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);
 
         // Create a uniswap pair for this new token
-        IUniswapV2Factory _uniswapV2Factory = IUniswapV2Factory(_uniswapV2Router.factory());
+        //IUniswapV2Factory _uniswapV2Factory = IUniswapV2Factory(_uniswapV2Router.factory());
         //address _uniswapV2Pair = _uniswapV2Factory.createPair(address(this), _uniswapV2Router.WETH());
 
         uniswapV2Router = _uniswapV2Router;
@@ -164,27 +174,26 @@ contract DHNETWORKTESTS is ERC20, Ownable {
         dividendTracker.excludeFromDividends(address(dividendTracker));
         dividendTracker.excludeFromDividends(address(this));
         dividendTracker.excludeFromDividends(owner());
-        dividendTracker.excludeFromDividends(deadWallet);
+        dividendTracker.excludeFromDividends(DEAD_WALLET);
+        dividendTracker.excludeFromDividends(_marketingWalletAddress);
+        dividendTracker.excludeFromDividends(_treasuryWalletAddress);
         dividendTracker.excludeFromDividends(address(_uniswapV2Router));
 
         // exclude from paying fees or having max transaction amount
         excludeFromFees(owner(), true);
         excludeFromFees(_marketingWalletAddress, true);
+        excludeFromFees(_treasuryWalletAddress, true);
         excludeFromFees(address(this), true);
+        excludeFromFees(address(0), true);
+        excludeFromFees(address(_uniswapV2Router), true);
 
         excludeFromTransferLimits(address(dividendTracker), true);
         excludeFromTransferLimits(address(this), true);
         excludeFromTransferLimits(_marketingWalletAddress, true);
-        excludeFromTransferLimits(deadWallet, true);
+        excludeFromTransferLimits(_treasuryWalletAddress, true);
+        excludeFromTransferLimits(DEAD_WALLET, true);
         excludeFromTransferLimits(address(_uniswapV2Router), true);
-        //excludeFromTransferLimits(address(_uniswapV2Pair), true);
         excludeFromTransferLimits(owner(), true);
-
-    	sellWait = 86400;
-
-    	startingTimeout = 300;
-
-
 
         /*
             _mint is an internal function in ERC20.sol that is only called here,
@@ -194,135 +203,13 @@ contract DHNETWORKTESTS is ERC20, Ownable {
 
     }
 
-    function getUniswapFactory() public view returns(address){
-        return uniswapV2Router.factory();
-    }
-
-    function getWETHAddress() public view returns(address){
-        return uniswapV2Router.WETH();
-    }
-
-    function crateUniswapV2Pair() public onlyOwner {
-        address _uniswapV2Pair = IUniswapV2Factory(uniswapV2Router.factory())
-            .createPair(address(this), uniswapV2Router.WETH());
-        excludeFromTransferLimits(address(_uniswapV2Pair), true);
-        _setAutomatedMarketMakerPair(_uniswapV2Pair, true);
-        uniswapV2Pair = _uniswapV2Pair;
-    }
-
-    function fundAndLockTeamAndMarketingWallets() public onlyOwner {
-        // Fund marketing wallet
-        super._transfer(owner(), address(_marketingWalletAddress), 200000 * (10**18));
-        uint256 lockUntil = block.timestamp.add(lockPeriod);
-        for (uint i = 0; i < _teamWallets.length; i++){
-            excludeFromFees(_teamWallets[i], true);
-            super._transfer(owner(), _teamWallets[i], maxWalletSize);
-            _teamWalletsLockTime[_teamWallets[i]] = lockUntil;
-            excludeFromFees(_teamWallets[i], false);
-        }
-    }
-
-    receive() external payable {
-
-  	}
-
-    function updateSellWait(uint256 newSellWait) external onlyOwner {
-        require(newSellWait != sellWait, "DHNETWORKTESTS: Cannot update sellWait to same value");
-        emit SellWaitUpdated(newSellWait, sellWait);
-        sellWait = newSellWait;
-    }
-
-    function updateDividendTracker(address newAddress) public onlyOwner {
-        require(newAddress != address(dividendTracker), "DHNETWORKTESTS: The dividend tracker already has that address");
-
-        DHNETWORKTESTSDividendTracker newDividendTracker = DHNETWORKTESTSDividendTracker(payable(newAddress));
-
-        require(newDividendTracker.owner() == address(this), "DHNETWORKTESTS: The new dividend tracker must be owned by the DHNETWORKTESTS token contract");
-
-        newDividendTracker.excludeFromDividends(address(newDividendTracker));
-        newDividendTracker.excludeFromDividends(address(this));
-        newDividendTracker.excludeFromDividends(owner());
-        newDividendTracker.excludeFromDividends(address(uniswapV2Router));
-
-        emit UpdateDividendTracker(newAddress, address(dividendTracker));
-
-        dividendTracker = newDividendTracker;
-    }
-
-    function updateUniswapV2Router(address newAddress) public onlyOwner {
-        require(newAddress != address(uniswapV2Router), "DHNETWORKTESTS: The router already has that address");
-        emit UpdateUniswapV2Router(newAddress, address(uniswapV2Router));
-        uniswapV2Router = IUniswapV2Router02(newAddress);
-        address _uniswapV2Pair = IUniswapV2Factory(uniswapV2Router.factory())
-            .createPair(address(this), uniswapV2Router.WETH());
-        excludeFromTransferLimits(address(_uniswapV2Pair), true);
-        uniswapV2Pair = _uniswapV2Pair;
-    }
-
-    function excludeFromFees(address account, bool excluded) public onlyOwner {
-        require(_isExcludedFromFees[account] != excluded, "DHNETWORKTESTS: Account is already the value of 'excluded'");
-        _isExcludedFromFees[account] = excluded;
-
-        emit ExcludeFromFees(account, excluded);
-    }
-
-    function excludeFromTransferLimits(address account, bool excluded) public onlyOwner {
-        require(_isExcludedFromTransferLimits[account] != excluded, "DHNETWORKTESTS: Account is already the value of 'excluded'");
-        _isExcludedFromTransferLimits[account] = excluded;
-
-        emit ExcludeFromTransferLimits(account, excluded);
-    }
-
-    function excludeMultipleAccountsFromFees(address[] calldata accounts, bool excluded) public onlyOwner {
-        for(uint256 i = 0; i < accounts.length; i++) {
-            _isExcludedFromFees[accounts[i]] = excluded;
-        }
-
-        emit ExcludeMultipleAccountsFromFees(accounts, excluded);
-    }
-
-    function setMarketingWallet(address payable wallet) external onlyOwner{
-        _marketingWalletAddress = wallet;
-    }
-
-    function setRewardsTokenAddress(address newAddress) external onlyOwner{
-        dividendTracker.setRewardsTokenAddress(newAddress);
-        _rewardsTokenAddress = newAddress;
-    }
-    
-    function setTOKENRewardsFee(uint256 value) external onlyOwner{
-        TOKENRewardsFee = value;
-        totalFees = TOKENRewardsFee.add(liquidityFee).add(marketingFee);
-    }
-
-    function setLiquiditFee(uint256 value) external onlyOwner{
-        liquidityFee = value;
-        totalFees = TOKENRewardsFee.add(liquidityFee).add(marketingFee);
-    }
-
-    function setMarketingFee(uint256 value) external onlyOwner{
-        marketingFee = value;
-        totalFees = TOKENRewardsFee.add(liquidityFee).add(marketingFee);
-
-    }
-
-    function setAutomatedMarketMakerPair(address pair, bool value) public onlyOwner {
-        require(pair != uniswapV2Pair, "DHNETWORKTESTS: The PancakeSwap pair cannot be removed from automatedMarketMakerPairs");
-
-        _setAutomatedMarketMakerPair(pair, value);
-    }
-
-    function blacklistAddress(address account, bool value) external onlyOwner{
-        _isBlacklisted[account] = value;
-    }
-
-
     function _setAutomatedMarketMakerPair(address pair, bool value) private {
         require(automatedMarketMakerPairs[pair] != value, "DHNETWORKTESTS: Automated market maker pair is already set to that value");
         automatedMarketMakerPairs[pair] = value;
 
         if(value) {
             dividendTracker.excludeFromDividends(pair);
+            excludeFromTransferLimits(pair, true);
         }
 
         emit SetAutomatedMarketMakerPair(pair, value);
@@ -334,10 +221,6 @@ contract DHNETWORKTESTS is ERC20, Ownable {
         require(newValue != gasForProcessing, "DHNETWORKTESTS: Cannot update gasForProcessing to same value");
         emit GasForProcessingUpdated(newValue, gasForProcessing);
         gasForProcessing = newValue;
-    }
-
-    function updateClaimWait(uint256 claimWait) external onlyOwner {
-        dividendTracker.updateClaimWait(claimWait);
     }
 
     function getClaimWait() external view returns(uint256) {
@@ -412,30 +295,36 @@ contract DHNETWORKTESTS is ERC20, Ownable {
     }
 
 
-    function canSell(address from, uint256 amount) public view returns(bool){
+    function _canSell(address from, uint256 amount) external view returns(bool){
+        return canSell(from, amount);
+    }
+
+
+    function canSell(address from, uint256 amount) private view returns(bool){
         // If address is excluded from fees or is the owner of the contract or is the contract we allow all transfers to avoid probles with liquidity or dividends
-        if (_isExcludedFromFees[from] || from == owner() || from == address(this)){
+        if (_isExcludedFromFees[from]){
             return true;
         }
         
+        uint256 walletBalance = balanceOf(from);
         // If wallet is trying to sell more than 10% of it's balance we won't allow the transfer
-        if(balanceOf(from) > 0 && amount > balanceOf(from).mul(_maxDailyTxPercentage).div(100)){
+        if(walletBalance > 0 && amount > walletBalance.mul(_maxDailyTxPercentage).div(100)){
             return false;
         }
         // If time of last sell plus waiting time is greater than actual time we need to check if addres is trying to sell more than 10%
-        if(_sellsHistoryPerAddress[from].sellTime.add(sellWait) >= block.timestamp){
-            uint256 maxSell = balanceOf(from).add(_sellsHistoryPerAddress[from].salesAmount).mul(_maxDailyTxPercentage).div(100);
+        if(_sellsHistoryPerAddress[from].sellTime.add(_sellWait) >= block.timestamp){
+            uint256 maxSell = walletBalance.add(_sellsHistoryPerAddress[from].salesAmount).mul(_maxDailyTxPercentage).div(100);
             return _sellsHistoryPerAddress[from].salesAmount.add(amount) < maxSell;
         }
-        if(_sellsHistoryPerAddress[from].sellTime.add(sellWait) < block.timestamp){
+        if(_sellsHistoryPerAddress[from].sellTime.add(_sellWait) < block.timestamp){
             return true;
         }
         return false;
     }
 
     function getTimeUntilNextTransfer(address from) external view returns(uint256){
-        if(_sellsHistoryPerAddress[from].sellTime.add(sellWait) > block.timestamp){
-            return _sellsHistoryPerAddress[from].sellTime.add(sellWait).sub(block.timestamp);
+        if(_sellsHistoryPerAddress[from].sellTime.add(_sellWait) > block.timestamp){
+            return _sellsHistoryPerAddress[from].sellTime.add(_sellWait).sub(block.timestamp);
         }
         return 0;
     }
@@ -443,7 +332,7 @@ contract DHNETWORKTESTS is ERC20, Ownable {
     function updateAddressLastSellData(address from, uint256 amount) private {
         // If tiem of last sell plus waiting time is lower than the actual time is either a first sale or waiting time has expired
         // We can reset all struct values for this address
-        if(_sellsHistoryPerAddress[from].sellTime.add(sellWait) < block.timestamp){
+        if(_sellsHistoryPerAddress[from].sellTime.add(_sellWait) < block.timestamp){
             _sellsHistoryPerAddress[from].salesAmount = amount;
             _sellsHistoryPerAddress[from].sellTime = block.timestamp;
             return;
@@ -452,19 +341,30 @@ contract DHNETWORKTESTS is ERC20, Ownable {
     }
 
 
-    // This should limit the wallet tokens to maxWalletSize
-    function _maxWalletReached(address to, uint256 amount) public view returns (bool) {
-        if(to == owner() || automatedMarketMakerPairs[to] || to == address(this) || to == _marketingWalletAddress || to == address(dividendTracker)){
+
+    // This should limit the wallet tokens to _maxWalletSize
+    function _maxWalletReached(address to) external view returns (bool) {
+        return maxWalletReached(to, 0);
+    }
+
+    // This should limit the wallet tokens to _maxWalletSize
+    function maxWalletReached(address to, uint256 amount) private view returns (bool) {
+        if(_isExcludedFromTransferLimits[to]){
             return false;
         }
         uint256 amountToBuy = amount;
         if (!_isExcludedFromFees[to]){
-            amountToBuy = amount.sub(amount.mul(totalFees).div(100));
+        	uint256 fees = amount.mul(totalFees).div(100);
+            amountToBuy = amount.sub(fees);
         }
-        return balanceOf(to).add(amountToBuy) >= maxWalletSize;
+        return balanceOf(to).add(amountToBuy) >= _maxWalletSize;
     }
 
-    function _isTeamWalletLocked(address who) public view returns (bool){
+    function _isTeamWalletLocked(address who) external view returns (bool){
+        return isTeamWalletLocked(who);
+    }
+
+    function isTeamWalletLocked(address who) private view returns (bool){
         bool isTeamWallet = false;
         for (uint i = 0; i < _teamWallets.length; i++){
             if(_teamWallets[i] == who){
@@ -488,10 +388,21 @@ contract DHNETWORKTESTS is ERC20, Ownable {
     ) internal override {
         require(from != address(0), "ERC20: transfer from the zero address");
         require(to != address(0), "ERC20: transfer to the zero address");
-        require(!_isBlacklisted[from] && !_isBlacklisted[to], 'Blacklisted address');
-        require(_firstTransferTime.add(startingTimeout) < block.timestamp, 'Transfers not allowed the first 2 hours');
-        require(!_isTeamWalletLocked(to) && !_isTeamWalletLocked(from), "Team wallet is locked");
-        require(!_maxWalletReached(to, amount), 'Wallets can not hold more than 15000 tokens');
+        require(!_isBlacklisted[from] && !_isBlacklisted[to], "Blacklisted address");
+        //require(_firstTransferTime.add(START_TIMEOUT) < block.timestamp, "Transfers not allowed yet");
+        require(!isTeamWalletLocked(to) && !isTeamWalletLocked(from), "Team wallet is locked");
+        
+        bool isTransferBetweenWallets = to != address(this) && from != address(this) && !automatedMarketMakerPairs[to]
+            && !automatedMarketMakerPairs[from] && to != owner() && from != owner()
+            && from != address(dividendTracker) && to != address(dividendTracker);
+            
+        if(!isTransferBetweenWallets && !_isExcludedFromFees[to] && !_isExcludedFromFees[from]) {
+            require(amount <= _maxTxAmount, "Transfer amount exceeds the maxTxAmount.");
+        }
+        
+        if (from == uniswapV2Pair){
+            require(!maxWalletReached(to, amount), "Wallets can not hold more than 15000 tokens");
+        }
 
         if(amount == 0) {
             super._transfer(from, to, 0);
@@ -508,10 +419,6 @@ contract DHNETWORKTESTS is ERC20, Ownable {
             }
             updateAddressLastSellData(from, amount);
         }
-        
-        bool isTransferBetweenWallets = to != address(this) && to != owner() && !automatedMarketMakerPairs[to]
-            && !automatedMarketMakerPairs[from] && from != address(this) && from != owner() && to != address(0) && from != address(0)
-            && from != address(dividendTracker) && to != address(dividendTracker) && from != _marketingWalletAddress && to != _marketingWalletAddress;
 
         if (isTransferBetweenWallets){
             cloneSellDataToTransferWallet(to, from);
@@ -519,13 +426,14 @@ contract DHNETWORKTESTS is ERC20, Ownable {
 
 		uint256 contractTokenBalance = balanceOf(address(this));
 
-        bool canSwap = contractTokenBalance >= swapTokensAtAmount;
+        bool canSwap = contractTokenBalance >= _swapTokensAtAmount;
 
         if( canSwap &&
             !swapping &&
             !automatedMarketMakerPairs[from] &&
             from != owner() &&
-            to != owner()
+            to != owner() &&
+            !isTransferBetweenWallets
         ) {
 
             swapping = true;
@@ -544,23 +452,20 @@ contract DHNETWORKTESTS is ERC20, Ownable {
 
         bool takeFee = !swapping;
 
-        // if any account belongs to _isExcludedFromFee account then remove the fee
+        // if any account belongs to _isExcludedFromFees account then remove the fee
         if(_isExcludedFromFees[from] || _isExcludedFromFees[to] || isTransferBetweenWallets) {
             takeFee = false;
         }
 
         if(takeFee) {
         	uint256 fees = amount.mul(totalFees).div(100);
-        	if(automatedMarketMakerPairs[to]){
-        	    fees += amount.mul(1).div(100);
-        	}
         	amount = amount.sub(fees);
-
-            super._transfer(from, address(this), fees);
+            
+           super._transfer(from, address(this), fees);
+            
         }
-
         super._transfer(from, to, amount);
-
+        
         try dividendTracker.setBalance(payable(from), balanceOf(from)) {} catch {}
         try dividendTracker.setBalance(payable(to), balanceOf(to)) {} catch {}
 
@@ -576,19 +481,25 @@ contract DHNETWORKTESTS is ERC20, Ownable {
         }
     }
 
-    function swapAndSendToFee(uint256 tokens) private  {
+    function swapAndSendToFee(uint256 tokens) private {
 
         uint256 initialTOKENBalance = IERC20(_rewardsTokenAddress).balanceOf(address(this));
 
-        swapTokensForRewardToken(tokens);
+        //swapTokensForRewardToken(tokens);
+        swapTokensForEth(tokens);
         uint256 newBalance = (IERC20(_rewardsTokenAddress).balanceOf(address(this))).sub(initialTOKENBalance);
-        IERC20(_rewardsTokenAddress).transfer(_marketingWalletAddress, newBalance);
+        //IERC20(_rewardsTokenAddress).transfer(_marketingWalletAddress, newBalance);
+        transferToAddressETH(_marketingWalletAddress, newBalance);
+    }
+    
+    function transferToAddressETH(address payable recipient, uint256 amount) private {
+        recipient.transfer(amount);
     }
 
-    function swapAndLiquify(uint256 tokens) private {
+    function swapAndLiquify(uint256 tokens) private{
        // split the contract balance into halves
         uint256 half = tokens.div(2);
-        uint256 otherHalf = tokens.sub(half);
+        //uint256 otherHalf = tokens.sub(half);
 
         // capture the contract's current ETH balance.
         // this is so that we can capture exactly the amount of ETH that the
@@ -603,14 +514,12 @@ contract DHNETWORKTESTS is ERC20, Ownable {
         uint256 newBalance = address(this).balance.sub(initialBalance);
 
         // add liquidity to uniswap
-        addLiquidity(otherHalf, newBalance);
+        addLiquidity(half, newBalance);
 
-        emit SwapAndLiquify(half, newBalance, otherHalf);
+        emit SwapAndLiquify(half, newBalance, half);
     }
 
-
-    function swapTokensForEth(uint256 tokenAmount) private {
-
+    function swapTokensForEth(uint256 tokenAmount)  private{
 
         // generate the uniswap pair path of token -> weth
         address[] memory path = new address[](2);
@@ -676,6 +585,131 @@ contract DHNETWORKTESTS is ERC20, Ownable {
             emit SendDividends(tokens, dividends);
         }
     }
+    
+    function setMaxTxAmount(uint256 maxTxAmount) external onlyOwner() {
+        _maxTxAmount = maxTxAmount;
+    }
+
+    function updateClaimWait(uint256 claimWait) external onlyOwner {
+        dividendTracker.updateClaimWait(claimWait);
+    }
+
+    function setAutomatedMarketMakerPair(address pair, bool value) public onlyOwner {
+        require(pair != uniswapV2Pair, "DHNETWORKTESTS: The PancakeSwap pair cannot be removed from automatedMarketMakerPairs");
+
+        _setAutomatedMarketMakerPair(pair, value);
+    }
+    function crateUniswapV2Pair() public onlyOwner {
+        address _uniswapV2Pair = IUniswapV2Factory(uniswapV2Router.factory())
+            .createPair(address(this), uniswapV2Router.WETH());
+        _setAutomatedMarketMakerPair(_uniswapV2Pair, true);
+        uniswapV2Pair = _uniswapV2Pair;
+    }
+
+    function fundAndLockTeamAndMarketingWallets() public onlyOwner {
+        // Fund marketing wallet
+        super._transfer(owner(), address(_marketingWalletAddress), 200000 * (10**18));
+        uint256 lockUntil = block.timestamp.add(lockPeriod);
+        for (uint i = 0; i < _teamWallets.length; i++){
+            excludeFromFees(_teamWallets[i], true);
+            super._transfer(owner(), _teamWallets[i], _maxWalletSize);
+            _teamWalletsLockTime[_teamWallets[i]] = lockUntil;
+            excludeFromFees(_teamWallets[i], false);
+        }
+    }
+
+    receive() external payable {
+
+  	}
+  	
+
+    function updateSellWait(uint256 newSellWait) external onlyOwner {
+        require(newSellWait != _sellWait, "DHNETWORKTESTS: Cannot update sellWait to same value");
+        emit SellWaitUpdated(newSellWait, _sellWait);
+        _sellWait = newSellWait;
+    }
+
+    function updateDividendTracker(address newAddress) public onlyOwner {
+        require(newAddress != address(dividendTracker), "DHNETWORKTESTS: The dividend tracker already has that address");
+
+        DHNETWORKTESTSDividendTracker newDividendTracker = DHNETWORKTESTSDividendTracker(payable(newAddress));
+
+        require(newDividendTracker.owner() == address(this), "DHNETWORKTESTS: The new dividend tracker must be owned by the DHNETWORKTESTS token contract");
+
+        newDividendTracker.excludeFromDividends(address(newDividendTracker));
+        newDividendTracker.excludeFromDividends(address(this));
+        newDividendTracker.excludeFromDividends(owner());
+        newDividendTracker.excludeFromDividends(address(uniswapV2Router));
+
+        emit UpdateDividendTracker(newAddress, address(dividendTracker));
+
+        dividendTracker = newDividendTracker;
+    }
+
+    function updateUniswapV2Router(address newAddress) public onlyOwner {
+        require(newAddress != address(uniswapV2Router), "DHNETWORKTESTS: The router already has that address");
+        emit UpdateUniswapV2Router(newAddress, address(uniswapV2Router));
+        uniswapV2Router = IUniswapV2Router02(newAddress);
+        address _uniswapV2Pair = IUniswapV2Factory(uniswapV2Router.factory())
+            .createPair(address(this), uniswapV2Router.WETH());
+        excludeFromTransferLimits(address(_uniswapV2Pair), true);
+        uniswapV2Pair = _uniswapV2Pair;
+    }
+
+    function excludeFromFees(address account, bool excluded) public onlyOwner {
+        require(_isExcludedFromFees[account] != excluded, "DHNETWORKTESTS: Account is already the value of 'excluded'");
+        _isExcludedFromFees[account] = excluded;
+
+        emit ExcludeFromFees(account, excluded);
+    }
+
+    function excludeFromTransferLimits(address account, bool excluded) public onlyOwner {
+        require(_isExcludedFromTransferLimits[account] != excluded, "DHNETWORKTESTS: Account is already the value of 'excluded'");
+        _isExcludedFromTransferLimits[account] = excluded;
+
+        emit ExcludeFromTransferLimits(account, excluded);
+    }
+
+    function excludeMultipleAccountsFromFees(address[] calldata accounts, bool excluded) public onlyOwner {
+        for(uint256 i = 0; i < accounts.length; i++) {
+            _isExcludedFromFees[accounts[i]] = excluded;
+        }
+
+        emit ExcludeMultipleAccountsFromFees(accounts, excluded);
+    }
+
+    function setMarketingWallet(address payable wallet) external onlyOwner{
+        _marketingWalletAddress = wallet;
+    }
+
+    function setTreasuryWallet(address payable wallet) external onlyOwner{
+        _treasuryWalletAddress = wallet;
+    }
+
+    function setRewardsTokenAddress(address newAddress) external onlyOwner{
+        dividendTracker.setRewardsTokenAddress(newAddress);
+        _rewardsTokenAddress = newAddress;
+    }
+    
+    function setTOKENRewardsFee(uint256 value) external onlyOwner{
+        TOKENRewardsFee = value;
+        totalFees = TOKENRewardsFee.add(liquidityFee).add(marketingFee);
+    }
+
+    function setLiquiditFee(uint256 value) external onlyOwner{
+        liquidityFee = value;
+        totalFees = TOKENRewardsFee.add(liquidityFee).add(marketingFee);
+    }
+
+    function setMarketingFee(uint256 value) external onlyOwner{
+        marketingFee = value;
+        totalFees = TOKENRewardsFee.add(liquidityFee).add(marketingFee);
+
+    }
+
+    function blacklistAddress(address account, bool value) external onlyOwner{
+        _isBlacklisted[account] = value;
+    }
 }
 
 contract DHNETWORKTESTSDividendTracker is Ownable, DividendPayingToken {
@@ -700,7 +734,7 @@ contract DHNETWORKTESTSDividendTracker is Ownable, DividendPayingToken {
 
     constructor() public DividendPayingToken("DHNETWORKTESTS_Dividen_Tracker", "DHNETWORKTESTS_Dividend_Tracker") {
     	claimWait = 3600;
-        minimumTokenBalanceForDividends = 7500 * (10**18); //must hold 200000+ tokens
+        minimumTokenBalanceForDividends = 7500 * (10**18); //must hold 7500+ tokens
     }
 
     function _transfer(address, address, uint256) internal override {
